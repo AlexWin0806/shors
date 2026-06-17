@@ -2,17 +2,14 @@
 """
 shors_algorithm.py
 ==================
-Quantum factorisation of semiprimes using Shor's Algorithm,
+Quantum factorization of semiprimes using Shor's Algorithm,
 simulated on a classical computer via Qiskit Aer.
 
 How to install
 ──────────────
     pip install qiskit qiskit-aer numpy
 
-Recommended semiprimes to try
-──────────────────────────────
-    15, 21, 33, 35, 51, 55, 65, 77, 85, 91
-    (Larger N increases circuit depth and simulation time.)
+Semiprimes less than 100 are recommended. (Larger N increases circuit depth and simulation time.)
 
 Algorithm overview
 ──────────────────
@@ -59,8 +56,8 @@ except ImportError:
 # Number-theory helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""Trial-division primality test (fast enough for the small numbers we use)."""
 def is_prime(n: int) -> bool:
-    """Trial-division primality test (fast enough for the small numbers we use)."""
     if n < 2:
         return False
     if n < 4:
@@ -74,9 +71,8 @@ def is_prime(n: int) -> bool:
         i += 6
     return True
 
-
+"""Return True iff n = p × q for primes p ≤ q (p may equal q)."""
 def is_semiprime(n: int) -> bool:
-    """Return True iff n = p × q for primes p ≤ q (p may equal q)."""
     if n < 4:
         return False
     for p in range(2, int(n ** 0.5) + 1):
@@ -86,18 +82,15 @@ def is_semiprime(n: int) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Quantum-circuit building blocks
+# Quantum-circuit building
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""
+Build the 2^n × 2^n permutation (unitary) matrix for:
+    |x⟩  ──►  |a_pow · x  mod  N⟩    (x < N)
+    |x⟩  ──►  |x⟩                    (x ≥ N, identity on out-of-range states)
+"""
 def modmul_unitary(a_pow: int, N: int, n_qubits: int) -> np.ndarray:
-    """
-    Build the 2^n × 2^n permutation (unitary) matrix for:
-        |x⟩  ──►  |a_pow · x  mod  N⟩    (x < N)
-        |x⟩  ──►  |x⟩                    (x ≥ N, identity on out-of-range states)
-
-    Because gcd(a, N) = 1, the map x ↦ a·x mod N is a bijection on Z_N,
-    so this is a valid unitary matrix.
-    """
     dim = 2 ** n_qubits
     U = np.zeros((dim, dim), dtype=complex)
     for x in range(dim):
@@ -106,40 +99,39 @@ def modmul_unitary(a_pow: int, N: int, n_qubits: int) -> np.ndarray:
     return U
 
 
+"""
+Build a controlled-U gate where  U |x⟩ = |a^(2^power) · x  mod N⟩.
+Returns a ControlledGate: 1 control qubit + n_work target qubits.
+The control qubit is listed first when the gate is appended to a circuit.
+"""
 def ctrl_modmul_gate(a: int, power: int, N: int, n_work: int):
-    """
-    Build a controlled-U gate where  U |x⟩ = |a^(2^power) · x  mod N⟩.
-
-    Returns a ControlledGate: 1 control qubit + n_work target qubits.
-    The control qubit is listed first when the gate is appended to a circuit.
-    """
     a_pow = pow(a, 2 ** power, N)           # fast modular exponentiation
     U = modmul_unitary(a_pow, N, n_work)
     return UnitaryGate(U, label=f"×{a_pow}").control(1)
 
 
+"""
+Quantum Phase Estimation (QPE) circuit for Shor's order-finding.
+
+┌── Qubit layout ─────────────────────────────────────────────────┐
+│   qubits  [0 … n_count-1]        Counting / QPE register        │
+│   qubits  [n_count … total-1]    Work register (|1⟩ initially)  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌── Circuit steps ─────────────────────────────────────────────────┐
+│   1. H^⊗n_count          → equal superposition on counting reg  │
+│   2. X on qubit n_count  → initialise work register to |1⟩       │
+│   3. Controlled-U^(2^q)  → QPE entanglement (q = 0…n_count-1)    │
+│   4. Inverse QFT         → interference reveals the phase        │
+│   5. Measure counting    → classical bitstring encodes φ ≈ s/r   │
+└──────────────────────────────────────────────────────────────────┘
+
+Key identity:  U^j |1⟩ = |a^j mod N⟩
+The controlled-U^(2^q) operations collectively build the state
+    Σ_j  |j⟩|a^j mod N⟩   (over the counting-register superposition)
+so that QPE extracts an eigenphase of U, which encodes r.
+"""
 def build_shor_circuit(a: int, N: int, n_count: int) -> QuantumCircuit:
-    """
-    Quantum Phase Estimation (QPE) circuit for Shor's order-finding.
-
-    ┌── Qubit layout ─────────────────────────────────────────────────┐
-    │   qubits  [0 … n_count-1]        Counting / QPE register        │
-    │   qubits  [n_count … total-1]    Work register (|1⟩ initially)  │
-    └──────────────────────────────────────────────────────────────────┘
-
-    ┌── Circuit steps ─────────────────────────────────────────────────┐
-    │   1. H^⊗n_count          → equal superposition on counting reg   │
-    │   2. X on qubit n_count  → initialise work register to |1⟩       │
-    │   3. Controlled-U^(2^q)  → QPE entanglement (q = 0…n_count-1)   │
-    │   4. Inverse QFT         → interference reveals the phase         │
-    │   5. Measure counting    → classical bitstring encodes φ ≈ s/r   │
-    └──────────────────────────────────────────────────────────────────┘
-
-    Key identity:  U^j |1⟩ = |a^j mod N⟩
-    The controlled-U^(2^q) operations collectively build the state
-        Σ_j  |j⟩|a^j mod N⟩   (over the counting-register superposition)
-    so that QPE extracts an eigenphase of U, which encodes r.
-    """
     n_work = ceil(log2(N + 1))      # qubits needed to store 0 … N-1
     total  = n_count + n_work
 
@@ -170,18 +162,18 @@ def build_shor_circuit(a: int, N: int, n_count: int) -> QuantumCircuit:
 # Classical post-processing
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""
+Use the continued-fractions algorithm to extract the order r from a
+QPE measurement bitstring.
+
+The measurement encodes integer  m  where  m / 2^n_count ≈ s / r
+for some integer s.  Fraction.limit_denominator(N) recovers a candidate
+r' = r / gcd(s, r).  We scan small multiples of r' to find the true r
+satisfying  a^r ≡ 1 (mod N).
+
+Returns r (int) or None if decoding fails.
+"""
 def extract_order(bitstring: str, n_count: int, N: int, a: int):
-    """
-    Use the continued-fractions algorithm to extract the order r from a
-    QPE measurement bitstring.
-
-    The measurement encodes integer  m  where  m / 2^n_count ≈ s / r
-    for some integer s.  Fraction.limit_denominator(N) recovers a candidate
-    r' = r / gcd(s, r).  We scan small multiples of r' to find the true r
-    satisfying  a^r ≡ 1 (mod N).
-
-    Returns r (int) or None if decoding fails.
-    """
     m = int(bitstring, 2)
     if m == 0:
         return None
@@ -202,17 +194,16 @@ def extract_order(bitstring: str, n_count: int, N: int, a: int):
     return None
 
 
+"""
+Use the period r to find non-trivial factors of N.
+Given  a^r ≡ 1 (mod N)  with r even:
+    x  =  a^(r/2) mod N
+    If  x ≢ −1 (mod N):
+        gcd(x − 1, N)  and  gcd(x + 1, N)  are non-trivial factors.
+
+Returns (p, q) with p * q == N, or None.
+"""
 def factors_from_order(a: int, r, N: int):
-    """
-    Use the period r to find non-trivial factors of N.
-
-    Given  a^r ≡ 1 (mod N)  with r even:
-        x  =  a^(r/2) mod N
-        If  x ≢ −1 (mod N):
-            gcd(x − 1, N)  and  gcd(x + 1, N)  are non-trivial factors.
-
-    Returns (p, q) with p * q == N, or None.
-    """
     if r is None or r % 2 != 0:
         return None
 
@@ -233,19 +224,18 @@ def factors_from_order(a: int, r, N: int):
 # Shor's algorithm — main loop
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""
+Factor N using a simulated Shor's algorithm circuit.
+Tries up to 20 random values of  a  (coprime to N), each time:
+    •  Running the QPE circuit on AerSimulator
+    •  Decoding the top measurements via continued fractions
+    •  Testing whether the extracted period yields a factor
+
+Falls back to classical trial division if the quantum part stalls.
+
+Returns (p, q) with p * q == N, or (None, None).
+"""
 def shors_algorithm(N: int, verbose: bool = True):
-    """
-    Factor N using a simulated Shor's algorithm circuit.
-
-    Tries up to 20 random values of  a  (coprime to N), each time:
-        •  Running the QPE circuit on AerSimulator
-        •  Decoding the top measurements via continued fractions
-        •  Testing whether the extracted period yields a factor
-
-    Falls back to classical trial division if the quantum part stalls.
-
-    Returns (p, q) with p * q == N, or (None, None).
-    """
     SEP = "─" * 58
 
     print(f"\n{SEP}")
